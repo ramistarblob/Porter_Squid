@@ -11,6 +11,17 @@ from astropy import units as u
 from pprint import pprint
 import math
 from astropy.wcs import WCS
+from astropy.visualization import quantity_support
+from pvextractor import extract_pv_slice, Path
+from pvextractor import PathFromCenter
+from astropy.coordinates import Galactic
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+from astropy.utils import data
+from astropy.coordinates import SpectralCoord
+from radio_beam import Beam
+import astropy.constants as c
+import astropy.units as u
+
 
 
 '''creates moment maps and applies channel mask; firstchannel and lastchannel are saved to the dictionary'''
@@ -19,7 +30,9 @@ def fits_info(path):
     fits =  pyfits.open(path)
     header = fits[0].header
     pprint(header)
+    fit_wcs = WCS(header)
     fits.close()
+    return fit_wcs
 
 def channel_map(isotop, path, cube_FOV, smooth, polyorder, clip=None, smooth_threshold_mask=0.0,vel_range=None, cmap=cmocean.cm.ice): #firstchannel=0, lastchannel=-1, vel_range=None):
     #if firstchannel != 0:
@@ -35,7 +48,7 @@ def channel_map(isotop, path, cube_FOV, smooth, polyorder, clip=None, smooth_thr
     smoothed_data = bm.smooth_data(data=data, smooth=smooth, polyorder=polyorder)
     data = smoothed_data
     #print(data)
-    rms_smoothed = bm.estimate_RMS(data=data, N=5)  # this estimates rms from 1st and last 5 channels 
+    rms_smoothed = bm.estimate_RMS(data=data, N=5)  # this estimates rms from 1st a nd last 5 channels 
     print('RMS =',rms_smoothed)
 
     fits =  pyfits.open(path)
@@ -150,7 +163,7 @@ def channel_map(isotop, path, cube_FOV, smooth, polyorder, clip=None, smooth_thr
     plt.show()
      
 
-def create_moment_files(isotop, smooth, polyorder, clip_mom0_8=None, clip_mom1_2=None, smooth_threshold_mask=0.0, vel_range=None):
+def create_moment_files(isotop, smooth, polyorder, clip_mom0_8=None, clip_mom1_2_9=None, smooth_threshold_mask=0.0, vel_range=None):
     #if firstchannel != 0:
     #    isotop['firstchannel'] = firstchannel
     #if lastchannel != -1:
@@ -210,9 +223,9 @@ def create_moment_files(isotop, smooth, polyorder, clip_mom0_8=None, clip_mom1_2
                                                 clip=None, # this is a 2sigma clip to throw away noise artefacts
                                                 smooth_threshold_mask=0.0) 
     
-    if clip_mom1_2 is not None:
+    if clip_mom1_2_9 is not None:
         threshold_mask_mom1 = bm.get_threshold_mask(data=data,
-                                                    clip=clip_mom1_2,  # this is a 2sigma clip to throw away noise artefacts
+                                                    clip=clip_mom1_2_9,  # this is a 2sigma clip to throw away noise artefacts
                                                     smooth_threshold_mask=smooth_threshold_mask)
     
     else: 
@@ -237,43 +250,48 @@ def create_moment_files(isotop, smooth, polyorder, clip_mom0_8=None, clip_mom1_2
 
     # Apply the mask to the data
     masked_data=data*user_mask_3d_fin*threshold_mask  # Now we mask the data accordingly
-    masked_data_mom1_2=data*user_mask_3d_fin*threshold_mask_mom1
+    masked_data_mom1_2_9=data*user_mask_3d_fin*threshold_mask_mom1
 
     # Create moment maps
     moment0 = bm.collapse_zeroth(velax=velax, data=masked_data, rms=rms_smoothed)
-    moment1 = bm.collapse_first(velax=velax, data=masked_data_mom1_2, rms=rms_smoothed)
-    moment2 = bm.collapse_second(velax=velax, data=masked_data_mom1_2, rms=rms_smoothed)
+    moment1 = bm.collapse_first(velax=velax, data=masked_data_mom1_2_9, rms=rms_smoothed)
+    moment2 = bm.collapse_second(velax=velax, data=masked_data_mom1_2_9, rms=rms_smoothed)
     moment8 = bm.collapse_eighth(velax=velax, data=masked_data, rms=rms_smoothed)
+    moment9 = bm.collapse_ninth(velax=velax, data=masked_data_mom1_2_9, rms=rms_smoothed)
 
     # Save moment maps to FITS files
     bm.save_to_FITS(moments=moment0, method='zeroth', path=isotop['file'])
     bm.save_to_FITS(moments=moment1, method='first', path=isotop['file'])
     bm.save_to_FITS(moments=moment2, method='second', path=isotop['file'])
     bm.save_to_FITS(moments=moment8, method='eighth', path=isotop['file'])
+    bm.save_to_FITS(moments=moment9, method='ninth', path=isotop['file'])
 
-
-'''outputs moment 0, 1, and 8 images, as well as moment 0 snr plots and noise plots'''
-def moment_map(isotop, cube_FOV, thresh_mom1=None, thresh_mom2=None,rms_mom0=None, mom_0_contours=None,show_mom0_snr_plot=False, show_noise_plots=False):
+'''outputs moment 0, 1, and 8, 9 images, as well as moment 0 snr plots and noise plots'''
+def moment_map(isotop, cube_FOV, thresh_mom1=None, thresh_mom2=None, thresh_mom9=None, rms_mom0=None, mom_0_contours=None,show_mom0_snr_plot=False, show_noise_plots=False):
     cube = imagecube(isotop['file'], FOV = cube_FOV,bunit='Jy/beam')
     file_M0   = isotop['file'][:-5]+'_M0.fits'
     file_M1   = isotop['file'][:-5]+'_M1.fits'
     file_M2   = isotop['file'][:-5]+'_M2.fits'
     file_M8   = isotop['file'][:-5]+'_M8.fits'
+    file_M9   = isotop['file'][:-5]+'_M9.fits'
 
     file_dM0 = isotop['file'][:-5]+'_dM0.fits'
     file_dM1 = isotop['file'][:-5]+'_dM1.fits'
     file_dM2   = isotop['file'][:-5]+'_dM2.fits'
     file_dM8 = isotop['file'][:-5]+'_dM8.fits'
+    file_dM9 = isotop['file'][:-5]+'_dM9.fits'
 
     cubeMom_0 = imagecube(file_M0, FOV=cube_FOV)
     cubeMom_1 = imagecube(file_M1, FOV=cube_FOV)
     cubeMom_2 = imagecube(file_M2, FOV=cube_FOV)
     cubeMom_8 = imagecube(file_M8, FOV=cube_FOV)
+    cubeMom_9= imagecube(file_M9, FOV=cube_FOV)
 
     cubeMom_dm0 = imagecube(file_dM0, FOV=cube_FOV)
     cubeMom_dm1 = imagecube(file_dM1, FOV=cube_FOV)
     cubeMom_dm2 = imagecube(file_dM2, FOV=cube_FOV)
     cubeMom_dm8 = imagecube(file_dM8, FOV=cube_FOV)
+    cubeMom_dm9 = imagecube(file_dM9, FOV=cube_FOV)
 
     print(f'rms mom 0 = {np.nanstd(cubeMom_dm0.data)}, rms_mom0_try = {np.sqrt(np.mean(cubeMom_dm0.data**2))}, rms mom 1 = {np.nanstd(cubeMom_dm1.data)}, rms mom 2 = {np.nanstd(cubeMom_dm2.data)} ,rms mom 8 = {np.nanstd(cubeMom_dm8.data)}')
 
@@ -283,8 +301,9 @@ def moment_map(isotop, cube_FOV, thresh_mom1=None, thresh_mom2=None,rms_mom0=Non
 
     contour_levels = [level * mapPeak for level in mom_0_contours]
 
-    plt.figure(figsize=(10, 5))
-    pltmom0 = plt.imshow(cubeMom_0.data, origin='lower', cmap=cmocean.cm.ice_r, extent=cubeMom_0.extent)
+    fig, ax = plt.subplots(figsize=(10, 5))
+    pltmom0 = ax.imshow(cubeMom_0.data, origin='lower', cmap=cmocean.cm.ice_r, extent=cubeMom_0.extent)
+    cubeMom_0.plot_beam(ax, x0=0.1, y0=0.1, color='white')
     cbar = plt.colorbar(pltmom0)
     cbar.set_label(r'Jy $\mathrm{beam}^{-1}$ $\mathrm{km}$ $\mathrm{s}^{-1}$', fontsize=16, labelpad=20, rotation=270)
     plt.contour(cubeMom_0.data, origin='lower', extent=cubeMom_0.extent, levels=contour_levels,colors='k',linewidths=1)
@@ -353,6 +372,29 @@ def moment_map(isotop, cube_FOV, thresh_mom1=None, thresh_mom2=None,rms_mom0=Non
     plt.ylabel('Offset (arcsec)')
     plt.show()
 
+    #Plot moment 9 map
+    if thresh_mom9 is not None:
+        threshold = thresh_mom9 * rms_mom0
+        #mom2_masked = np.where(SNR_mom0 > thresh_mom2, cubeMom_2.data, np.nan)
+        mom9_masked = np.where(cubeMom_0.data > threshold, cubeMom_9.data, np.nan)
+        plt.figure(figsize=(10, 5))
+        pltmom9_masked= plt.imshow(mom9_masked, origin='lower', cmap='coolwarm', extent=cubeMom_9.extent)
+        cbar = plt.colorbar(pltmom9_masked)
+        cbar.set_label(label=r'$\mathrm{km}$/$\mathrm{s}$', rotation=270, fontsize=16, labelpad=20)
+        plt.title('Moment 9 Map')
+        plt.xlabel('Offset (arcsec)')
+        plt.ylabel('Offset (arcsec)')
+
+    else:
+        plt.figure(figsize=(10, 5))
+        pltmom9 = plt.imshow(cubeMom_9.data, origin='lower', cmap='coolwarm', extent=cubeMom_9.extent)
+        cbar = plt.colorbar(pltmom9)
+        cbar.set_label(label=r'$\mathrm{km}$/$\mathrm{s}$', rotation=270, fontsize=16, labelpad=20)
+        plt.title('Moment 9 Map')
+        plt.xlabel('Offset (arcsec)')
+        plt.ylabel('Offset (arcsec)')
+
+
     if show_mom0_snr_plot == True:
         # moment 0 snr plot 
         fig3, ax3 = plt.subplots(nrows=1, ncols=1, figsize=(12, 3))
@@ -365,24 +407,24 @@ def moment_map(isotop, cube_FOV, thresh_mom1=None, thresh_mom2=None,rms_mom0=Non
 
     
     if show_noise_plots == True:
-        fig2, ax2 = plt.subplots(nrows=1, ncols=4, figsize=(15,4))
+        fig2, ax2 = plt.subplots(nrows=1, ncols=5, figsize=(15,5))
         im0_dm = ax2[0].imshow(cubeMom_dm0.data, origin='lower', cmap=cmocean.cm.ice_r, extent=cubeMom_dm0.extent)
 
         im1_dm = ax2[1].imshow(cubeMom_dm1.data, cmap='coolwarm', origin='lower',extent=cubeMom_dm1.extent)
         im2_dm = ax2[2].imshow(cubeMom_dm2.data, cmap='coolwarm', origin='lower',extent=cubeMom_dm2.extent)
 
         im8_dm = ax2[3].imshow(cubeMom_dm8.data, cmap=cmocean.cm.ice, origin='lower', extent=cubeMom_dm8.extent)
+        im9_dm = ax2[3].imshow(cubeMom_dm9.data, cmap=cmocean.cm.ice, origin='lower', extent=cubeMom_dm9.extent)
 
         fig2.colorbar(im0_dm)
         fig2.colorbar(im1_dm)
         fig2.colorbar(im2_dm)
         fig2.colorbar(im8_dm)
+        fig2.colorbar(im9_dm)
 
         fig2.suptitle('Noise Moment Maps', fontsize=16)
     else:
          pass
-
-
 
 ''' finds brightest pixel in moment 0 map and outputs transformed coordinates '''
 
@@ -435,10 +477,11 @@ def finding_x0_y0(isotop, cube_FOV):
    
 '''extracts line profiles '''     
 #need to fig out what to do with giant list of params
-def extract_line_profiles(isotop,cube_FOV, xlim, xlim_fill, vel_range_index=None,r_min=None, r_max=None, inc= None, PA=None,x0=None,y0=None,mstar=None, dist=None, apply_kep=False, mom_0_contours=None,line_center=1, show_line_center=False, line_label=None):
+def extract_line_profiles(isotop,cube_FOV, xlim, xlim_fill, vel_range=None,r_min=None, r_max=None, inc= None, PA=None,x0=None,y0=None,mstar=None, dist=None, apply_kep=False, mom_0_contours=None,line_center=[1], line_color=["firebrick"], show_line_center=False, line_label=None):
     
     cube = imagecube(isotop['file'], FOV = cube_FOV)
     data, velax = bm.load_cube(isotop['file'])
+    velax=velax/1000
     #data = cube.data
 
     file_M0   = isotop['file'][:-5]+'_M0.fits'
@@ -451,10 +494,10 @@ def extract_line_profiles(isotop,cube_FOV, xlim, xlim_fill, vel_range_index=None
          xin, yin, dyin = cube.integrated_spectrum(r_min=r_min, r_max=r_max, inc=inc, PA=PA, x0=x0, y0=y0, empirical_uncertainty=True, mstar=mstar, dist=dist)
     else:
         xin, yin, dyin = cube.integrated_spectrum(r_min=r_min, r_max=r_max, inc=inc, PA=PA, x0=x0, y0=y0,empirical_uncertainty=True)
-
-        print(len(xin),len(yin))
-        print(xin,yin)
-    #print(xin)
+    
+        #print(len(xin),len(yin))
+        #print(xin,yin)
+    print(yin)
                                         # xin [m/s], yin [Jy], dyin [Jy] Note Jy as now integrated unit
     fig, (ax1,ax2) = plt.subplots(nrows=1,ncols=2,figsize=(15,5))
     ax1.errorbar(xin/1000, yin, dyin, fmt=' ', capsize=1.5, capthick=1.5, color='firebrick', lw=1.0) #note only works when mstar and dist are called
@@ -465,19 +508,40 @@ def extract_line_profiles(isotop,cube_FOV, xlim, xlim_fill, vel_range_index=None
     ax1.fill_between([xlim_fill[0],xlim_fill[1]],[-20,-20],[y_max+20,y_max+20],color='firebrick',alpha=0.1) #this spans the complete line width
     
     if show_line_center==True:
-        ax1.plot([line_center,line_center],[y_min-2,y_max+2],color='firebrick',ls='--',alpha=0.5,label='line centre')
+        for lc,col in zip(line_center,line_color):
+            ax1.plot([lc,lc],[y_min-2,y_max+2],color=col,ls='--',alpha=0.5)
     else:
         pass
+    
+    #print(vel_range)
+    #print(np.argmin(np.abs(velax[::-1] - vel_range[0])))
+    #print(velax[::-1][23])
+    index = np.where(velax[::-1] == vel_range[0])[0][0]
+    index2 = np.where(velax[::-1] == vel_range[1])[0][0]
+    print(index,index2)
 
-    vmin = vel_range_index[0]
-    vmax = vel_range_index[1]
+    vel_range_index = [index,index2]
+    vmax = vel_range_index[0]
+    vmin = vel_range_index[1]
 
     xin_km = xin/1000
-    int_flux = np.round(np.trapz(yin[vmin:vmax], xin[vmin:vmax]),-2)
-    err = 0.2*np.round(np.trapz(yin[vmin:vmax], xin
-    [vmin:vmax]),-2)
 
-    ax1.set_title(r'Integrated Flux = {:.0f} $\pm$ {:.0f} Jy$\,$m$\,$/s'.format(int_flux/1000,err/1000), fontsize=17)
+    xin_no_em = np.concatenate((xin[:vmin], xin[vmax:]))
+    yin_no_em = np.concatenate((yin[:vmin], yin[vmax:]))
+
+    # If you also want xin_no_em in km/s:
+    #xin_no_em_km = xin_no_em / 1000
+    dF = np.sqrt(len(xin[vmin:vmax]))*np.std(yin_no_em)
+
+    #print(xin[vmin:vmax])
+    #print(vmin,vmax)
+    int_flux = (np.trapz(yin[vmin:vmax], xin[vmin:vmax]))
+    err = (np.sqrt((0.05*int_flux)**2+(dF)**2))
+    
+    print(int_flux/1000)
+    print(err/1000)
+
+    ax1.set_title(r'Integrated Flux = {:.4f} $\pm$ {:.4f} Jy$\,$km$\,$/s'.format(int_flux/1000,err/1000), fontsize=17)
     #print(len(yin))
     print('y array to integrate (Jy)',yin[vmin:vmax])
     print('x array corresponding to y (km/s)',xin_km[vmin:vmax])
@@ -509,8 +573,148 @@ def extract_line_profiles(isotop,cube_FOV, xlim, xlim_fill, vel_range_index=None
     ax2.tick_params(axis = 'both', labelsize=15)
     cube.plot_beam(ax=ax2)
     cbar = fig.colorbar(im0)
-    cbar.set_label('Jy$\,$beam$^{-1}\,$m$\,$s$^{-1}$',rotation=270,fontsize=17, labelpad=20)
+    cbar.set_label('Jy$\,$beam$^{-1}\,$km$\,$s$^{-1}$',rotation=270,fontsize=17, labelpad=20)
     cbar.ax.tick_params(labelsize=15) 
+
+'''pv diagram'''
+def plot_pv(isotop, cube, smooth, polyorder,thresh,rms_mom0, mom_title, path_coords, width, fit_wcs,cmap,cbar_label, shrink,moment_xlim=None, moment_ylim=None, pv_xlim=None,pv_ylim=None):
+    
+    #path1 = PathFromCenter(center=Galactic(180.0289276656*u.deg,-2.1508378815*u.deg),length=40*u.arcsec,angle=25*u.deg, width=1)
+
+    file_M0   = isotop['file'][:-5]+'_M0.fits'
+    file_M1   = isotop['file'][:-5]+'_M1.fits'
+    file_M2   = isotop['file'][:-5]+'_M2.fits'
+    file_M8   = isotop['file'][:-5]+'_M8.fits'
+    file_M9   = isotop['file'][:-5]+'_M9.fits'
+
+    cubeMom_0 = imagecube(file_M0)
+    cubeMom_1 = imagecube(file_M1)
+    cubeMom_2 = imagecube(file_M2)
+    cubeMom_8 = imagecube(file_M8)
+    cubeMom_9= imagecube(file_M9)
+    
+    threshold = thresh * rms_mom0
+
+    if cube == 0:
+        cube = cubeMom_0
+    elif cube == 1:
+        cube = cubeMom_1
+        cube.data =  np.where(cubeMom_0.data > threshold, cubeMom_1.data, np.nan)
+    elif cube == 2:
+        cube = cubeMom_2
+        cube.data =  np.where(cubeMom_0.data > threshold, cubeMom_2.data, np.nan)
+    elif cube == 8:
+        cube = cubeMom_8
+    elif cube == 9:
+        cube= cubeMom_9
+        cube.data =  np.where(cubeMom_0.data > threshold, cubeMom_9.data, np.nan)
+
+    data, velax = bm.load_cube(isotop['file'])
+    #data = cube.data
+    velax=velax/1000
+    #print("velocity axis", "velax")
+    smoothed_data = bm.smooth_data(data=data, smooth=smooth, polyorder=polyorder)
+    data = smoothed_data
+
+    path = Path(path_coords,width=width)
+    pv_diagram = extract_pv_slice(data, path,wcs=fit_wcs)
+    
+
+    crpix_hz = pv_diagram.header["CRPIX2"]
+    crpix_deg = pv_diagram.header["CRPIX1"]
+    restfreq_Hz=pv_diagram.header["RESTFRQ"]*u.Hz
+    cdelt_Hz=pv_diagram.header["CDELT2"]* u.Hz
+    cdelt_deg=pv_diagram.header["CDELT1"]*u.deg
+    crval_Hz=pv_diagram.header["CRVAL2"]* u.Hz
+    crval_deg=pv_diagram.header["CRVAL1"]*u.deg
+    n_pix_hz = pv_diagram.header["NAXIS2"]
+    n_pix_deg = pv_diagram.header["NAXIS1"]
+
+    # --- Frequency axis in Hz ---
+    pixels_freq = np.arange(n_pix_hz)
+    freq_axis = crval_Hz + (pixels_freq - (crpix_hz - 1)) * cdelt_Hz
+
+    # --- SpectralCoord: frequency → velocity (radio convention) ---
+    spec_coord = SpectralCoord(freq_axis,
+                            unit=u.Hz,
+                            doppler_rest=restfreq_Hz,
+                            doppler_convention='radio')
+    vel_axis = spec_coord.to(u.km/u.s)  # Convert frequency to velocity (radio convention)
+
+    #--spatial axis--
+
+    pixels_deg = np.arange(n_pix_deg)
+    deg_axis = crval_deg + (pixels_deg - (crpix_deg - 1)) * cdelt_deg
+
+    # Plotting
+    fig = plt.figure(figsize=(25, 15))  # Increase figure size if needed
+
+    # Moment 0 map
+    ax1 = fig.add_subplot(121, projection=fit_wcs, slices=('x', 'y', 0, 0))
+    im0 = ax1.imshow(cube.data, origin='lower', cmap=cmap)
+    path.show_on_axis(ax1, spacing=1, linestyle=':', edgecolor='r', linewidth=1.5)  # Slightly thicker line for path
+    #mom0_cube.plot_beam(ax1, x0=0.1, y0=0.1, color='white')
+    #mom1_cube.plot_beam(ax1, x0=70, y0=70, color='black')
+    cbar = fig.colorbar(im0, ax=ax1, pad=0.01,shrink=shrink)  
+    cbar.ax.tick_params(labelsize=20) 
+    cbar.set_label(cbar_label, fontsize=22, labelpad=10) 
+
+
+    # Add axis labels to the first plot
+    ax1.set_xlabel('RA', fontsize=22)
+    ax1.set_ylabel('Dec', fontsize=22)
+    ax1.set_title(mom_title, fontsize=22)
+    ax1.tick_params(axis='both', labelsize=18)  # Increase tick label size
+    if moment_xlim is not None and moment_ylim is not None:
+        ax1.set_xlim(moment_xlim[0],moment_xlim[1])
+        ax1.set_ylim(moment_ylim[0],moment_ylim[1])
+    else:
+        pass
+
+    # PV diagram with accurate velocity axis
+    ax2 = fig.add_subplot(122)
+    im = ax2.imshow(pv_diagram.data, origin='lower', cmap=cmocean.cm.ice)
+    ax2.set_xlabel("Offset (degrees)", fontsize=22)  # x-axis in degrees
+    ax2.set_ylabel("Velocity (km/s)", fontsize=22)  # y-axis for velocity
+    ax2.set_yticks(np.linspace(0, n_pix_hz-1, 8))
+    ax2.set_yticklabels([f"{v:.1f}" for v in np.linspace(vel_axis[0].value, vel_axis[-1].value, 8)], fontsize=18)
+    ax2.tick_params(axis='x', labelsize=18)  # Increase x-tick label size
+
+    # Update x-axis to show offsets in degrees (no unnecessary conversion)
+
+    #offset_deg = (pixels - (crpix - 1)) * cdelt_deg  # Offset in degrees
+    ax2.set_xticks(np.linspace(0, n_pix_deg-1, 10))
+    ax2.set_xticklabels([f"{offset:.3f}" for offset in np.linspace(deg_axis[0].value, deg_axis[-1].value, 10)], fontsize=18)
+
+    # Set y-limits (to zoom in the PV diagram as per your original code)
+
+
+    # Create a properly sized colorbar
+
+    divider = make_axes_locatable(ax2)
+    cax = divider.append_axes("right", size="5%", pad=0.2)  # Wider colorbar with padding
+    cb = plt.colorbar(im, cax=cax)
+    cb.set_label("", fontsize=22)  # Match other labels
+    cb.ax.tick_params(labelsize=18)  # Increase colorbar tick label size
+    cb.set_label("Jy/beam", fontsize=22) 
+    if pv_xlim is not None:
+        ax2.set_xlim(pv_xlim[0], pv_xlim[1])
+    if pv_ylim is not None:
+        ax2.set_ylim(pv_ylim[0],pv_ylim[1])
+    else:
+        pass
+    # Adjust layout with more control
+    plt.subplots_adjust(wspace=0.3)  # Add more space between subplots
+    plt.tight_layout()
+
+    # Show the figure
+    plt.show()
+
+    #return pv_diagram
+
+
+    
+
 
 
 '''mean intensity 1D profile'''
